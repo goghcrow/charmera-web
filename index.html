@@ -374,6 +374,7 @@ const state = {
   ratio: "full",         // full | 4:3 | 1:1  —— 都是对原生 16:9 的纯裁切,不拉伸
   stream: null,
   running: false,
+  starting: false,
   lastShotURL: null,
   lastShotBlob: null,
   useRVFC: typeof cam.requestVideoFrameCallback === "function",
@@ -515,6 +516,8 @@ function layoutViewport() {
   }
 }
 window.addEventListener("resize", layoutViewport);
+// iOS 横竖屏切换 resize 时机滞后,orientationchange 后延迟重排取景框
+window.addEventListener("orientationchange", () => setTimeout(layoutViewport, 250));
 
 /* ============================================================
  *  摄像头
@@ -523,10 +526,16 @@ async function startCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     return showErr("此浏览器不支持摄像头接口(getUserMedia 缺失)。");
   }
+  if (state.starting) return;          // 互斥:防止连点翻转 / 可见性重入并发
+  state.starting = true;
+  state.running = false;               // 先停旧循环,旧帧回调凭 loopGen 失效
+  loopGen++;
+
   if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
 
+  let stream;
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: state.facing },
         width:  { ideal: 1920 },
@@ -535,22 +544,28 @@ async function startCamera() {
       audio: false,
     });
   } catch (e) {
+    state.starting = false;
+    if (state.prevFacing) state.facing = state.prevFacing; // 翻转失败回滚朝向
     const name = (e && e.name) ? e.name : String(e);
     return showErr("无法访问摄像头:" + name +
       "。请确认已授权,且页面通过 HTTPS 打开(file:// / http 下 iOS Safari 无法调用摄像头)。");
   }
 
-  cam.srcObject = state.stream;
+  state.stream = stream;
+  cam.srcObject = stream;
   await cam.play().catch(() => {});
 
   $("gate").style.display = "none";
   $("app").hidden = false;
   layoutViewport();
 
-  // 作废任何在途的旧帧回调,再启唯一的新循环(切前后摄 / 后台回切都安全)
-  loopGen++;
-  state.running = true;
-  scheduleFrame(loopGen);
+  state.starting = false;
+  state.prevFacing = null;
+  // 只有页面仍可见才启动循环;若 await 期间被切后台,交由 visibilitychange 恢复
+  if (!document.hidden) {
+    state.running = true;
+    scheduleFrame(loopGen);
+  }
 }
 function showErr(msg) {
   const el = $("gateErr");
@@ -605,6 +620,7 @@ function renderFrame() {
  *  拍照 —— 按当前取景比例裁切导出(与预览所见一致)
  * ============================================================ */
 function takePhoto() {
+  if (!cam.videoWidth || !cam.videoHeight) { toast("画面未就绪,请稍候"); return; }
   renderFrame();
 
   $("flash").classList.remove("go");
@@ -647,10 +663,11 @@ function fileName() { return `charmera-${state.current}-${Date.now()}.png`; }
 
 async function savePhoto() {
   const blob = state.lastShotBlob;
-  if (!blob) return;
+  if (!blob || state.sharing) return;   // 防止 share 进行中重复点击触发 InvalidStateError
 
   const file = new File([blob], fileName(), { type: blob.type || "image/png" });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    state.sharing = true;
     try {
       await navigator.share({ files: [file] });
       toast("已打开分享 / 存图");
@@ -658,6 +675,8 @@ async function savePhoto() {
     } catch (e) {
       if (e && e.name === "AbortError") return; // 用户主动取消,不再兜底
       // 其它错误 → 继续走下方降级
+    } finally {
+      state.sharing = false;
     }
   }
 
@@ -690,6 +709,8 @@ function toast(msg) {
 
 /* ---------- 前后摄 ---------- */
 function flipCamera() {
+  if (state.starting) return;
+  state.prevFacing = state.facing;
   state.facing = state.facing === "environment" ? "user" : "environment";
   startCamera();
 }
@@ -728,6 +749,19 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+/* ---------- WebGL2 上下文丢失 / 恢复(iOS 后台切换高发) ---------- */
+function handleContextLost(e) {
+  e.preventDefault();          // 允许后续 restored 事件
+  state.running = false;
+  loopGen++;
+}
+function handleContextRestored() {
+  if (!initGL()) { showErr("图形上下文恢复失败,请刷新页面。"); return; }
+  selectFilter(state.current); // 重传当前 LUT(纹理已随上下文销毁)
+  view.width = view.height = 0; // 逼 renderFrame 按原生分辨率重建
+  if (state.stream) { state.running = true; scheduleFrame(++loopGen); }
+}
+
 /* ============================================================
  *  启动
  * ============================================================ */
@@ -737,6 +771,8 @@ document.addEventListener("visibilitychange", () => {
     showErr("你的浏览器不支持 WebGL2。请升级到 iOS 15+ Safari 或较新版本的 Chrome / Android 浏览器。");
     return;
   }
+  view.addEventListener("webglcontextlost", handleContextLost, false);
+  view.addEventListener("webglcontextrestored", handleContextRestored, false);
   selectFilter(FIRST_FILTER); // 默认黑白 + 上传初始 LUT
   setRatio("full");           // 默认满屏(纯裁切)
 })();
