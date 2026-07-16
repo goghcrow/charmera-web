@@ -221,7 +221,9 @@
     background: rgba(0,0,0,.92);
   }
   .viewer.show { display: flex; }
-  .viewer img { max-width: 100%; max-height: 72%; border-radius: 14px; object-fit: contain; }
+  .viewer img { max-width: 100%; max-height: 72%; border-radius: 14px; object-fit: contain;
+    -webkit-touch-callout: default; -webkit-user-select: auto; user-select: auto; }
+  .viewer .hint { color: var(--cream-dim); font-size: 13px; letter-spacing: .5px; }
   .viewer .row { display: flex; gap: 14px; }
   .viewer .row button {
     font: 700 15px var(--sans); cursor: pointer; border-radius: 12px;
@@ -275,13 +277,14 @@
 </div>
 
 <div class="flash" id="flash"></div>
-<div class="toast" id="toast">已保存 / 已触发下载</div>
+<div class="toast" id="toast">已保存</div>
 
 <!-- 大图预览 -->
 <div class="viewer" id="viewer">
   <img id="viewerImg" alt="preview" />
+  <div class="hint" id="viewerHint">长按图片可保存到相册</div>
   <div class="row">
-    <button class="save" id="viewerSave" type="button">保存 / 下载</button>
+    <button class="save" id="viewerSave" type="button">分享 / 保存</button>
     <button class="close" id="viewerClose" type="button">返回取景</button>
   </div>
 </div>
@@ -317,7 +320,7 @@ function buildLUT(dark, light, levels) {
   const denom = Math.max(levels - 1, 1);
   for (let i = 0; i < 256; i++) {
     const q = Math.min(Math.floor((i / 256) * levels), levels - 1);
-    const step = denom === 0 ? 0 : q / denom;
+    const step = q / denom;
     const o = i * 3;
     lut[o]     = Math.round(dark[0] + step * (light[0] - dark[0]));
     lut[o + 1] = Math.round(dark[1] + step * (light[1] - dark[1]));
@@ -372,6 +375,7 @@ const state = {
   stream: null,
   running: false,
   lastShotURL: null,
+  lastShotBlob: null,
   useRVFC: typeof cam.requestVideoFrameCallback === "function",
 };
 
@@ -543,7 +547,10 @@ async function startCamera() {
   $("app").hidden = false;
   layoutViewport();
 
-  if (!state.running) { state.running = true; scheduleFrame(); }
+  // 作废任何在途的旧帧回调,再启唯一的新循环(切前后摄 / 后台回切都安全)
+  loopGen++;
+  state.running = true;
+  scheduleFrame(loopGen);
 }
 function showErr(msg) {
   const el = $("gateErr");
@@ -555,15 +562,17 @@ function showErr(msg) {
  *  渲染循环
  * ============================================================ */
 let lastT = performance.now(), frames = 0, fpsAcc = 0;
-function scheduleFrame() {
-  if (!state.running) return;
-  if (state.useRVFC) cam.requestVideoFrameCallback(onFrame);
-  else requestAnimationFrame(onFrame);
+let loopGen = 0; // 每次(重)启渲染循环自增,旧回调凭代际号自动失效,杜绝双循环
+function scheduleFrame(gen) {
+  if (!state.running || gen !== loopGen) return;
+  const tick = () => onFrame(gen);
+  if (state.useRVFC) cam.requestVideoFrameCallback(tick);
+  else requestAnimationFrame(tick);
 }
-function onFrame() {
-  if (!state.running) return;
+function onFrame(gen) {
+  if (!state.running || gen !== loopGen) return;
   renderFrame();
-  scheduleFrame();
+  scheduleFrame(gen);
 }
 function renderFrame() {
   const vw = cam.videoWidth, vh = cam.videoHeight;
@@ -620,20 +629,57 @@ function takePhoto() {
   out.toBlob((blob) => {
     if (!blob) { toast("拍照失败,请重试"); return; }
     if (state.lastShotURL) URL.revokeObjectURL(state.lastShotURL);
+    state.lastShotBlob = blob;
     state.lastShotURL = URL.createObjectURL(blob);
     $("thumbBtn").classList.add("has");
     $("thumbImg").src = state.lastShotURL;
-    saveBlob(blob);
+    toast("已拍摄 · 点右下角缩略图保存");
   }, "image/png");
 }
-function saveBlob(blob) {
-  const a = document.createElement("a");
-  a.download = `charmera-${state.current}-${Date.now()}.png`;
-  a.href = URL.createObjectURL(blob);
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  toast("已保存 / 已触发下载");
+
+/* ------------------------------------------------------------
+ *  保存 —— 分级降级
+ *  1) navigator.share({files})  : 原生分享面板 → 存相册(iOS/Android 首选)
+ *  2) 长按保存提示             : 引导在大图预览层长按存图
+ *  3) <a download>            : 桌面浏览器兜底
+ * ---------------------------------------------------------- */
+function fileName() { return `charmera-${state.current}-${Date.now()}.png`; }
+
+async function savePhoto() {
+  const blob = state.lastShotBlob;
+  if (!blob) return;
+
+  const file = new File([blob], fileName(), { type: blob.type || "image/png" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      toast("已打开分享 / 存图");
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // 用户主动取消,不再兜底
+      // 其它错误 → 继续走下方降级
+    }
+  }
+
+  if (isMobile()) {
+    openViewer();          // 移动端无 share:进大图,提示长按保存
+    toast("长按图片即可保存到相册");
+    return;
+  }
+
+  triggerDownload();       // 桌面兜底
 }
+
+function triggerDownload() {
+  const a = document.createElement("a");
+  a.download = fileName();
+  a.href = state.lastShotURL;
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("已触发下载");
+}
+
+const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)); // iPadOS 伪装桌面
 function toast(msg) {
   const t = $("toast");
   if (msg) t.textContent = msg;
@@ -665,12 +711,8 @@ $("flipBtn").addEventListener("click", flipCamera);
 $("thumbBtn").addEventListener("click", openViewer);
 $("viewerClose").addEventListener("click", closeViewer);
 $("viewerSave").addEventListener("click", () => {
-  if (!state.lastShotURL) return;
-  const a = document.createElement("a");
-  a.download = `charmera-${state.current}-${Date.now()}.png`;
-  a.href = state.lastShotURL;
-  document.body.appendChild(a); a.click(); a.remove();
-  toast("已保存 / 已触发下载");
+  if (!state.lastShotBlob) return;
+  savePhoto();
 });
 $("ratioToggle").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-ratio]");
