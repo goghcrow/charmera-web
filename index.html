@@ -5,164 +5,301 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="theme-color" content="#000000" />
-<title>Charmera 实时滤镜 · WebGL</title>
+<meta name="theme-color" content="#15140F" />
+<title>Charmera · WebGL 实时滤镜相机</title>
 <style>
+  /* ============================================================
+   *  配色 —— 对齐安卓原生版(克制的黄铜,不是刺眼的柯达黄)
+   * ============================================================ */
   :root {
-    --kodak-yellow: #ffb500;
-    --kodak-red: #ed1c24;
-    --ink: #e9e2d4;
-    --ink-dim: #b3a892;
-    --panel: rgba(30,26,22,.72);
-    --line: rgba(255,255,255,.14);
+    --brass:       #C9A15E;   /* 主强调:黄铜 */
+    --brass-amber: #B08A4C;   /* 按下态:暗黄铜 */
+    --graphite:    #15140F;   /* 暖近黑,背景 */
+    --charcoal:    #232019;   /* 抬升表面 */
+    --charcoal-2:  #2c2820;   /* 更亮表面 */
+    --cream:       #EDE7DA;   /* 骨白,主文字 */
+    --cream-dim:   #A8A090;   /* 暗骨白,次文字 */
+    --line:        rgba(237,231,218,.14);
+    --panel:       rgba(21,20,15,.62);
     --safe-t: env(safe-area-inset-top, 0px);
     --safe-b: env(safe-area-inset-bottom, 0px);
-    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
   html, body {
     height: 100%; width: 100%;
-    background: #000; color: var(--ink);
+    background: var(--graphite); color: var(--cream);
     font-family: var(--sans);
     overflow: hidden;
     -webkit-text-size-adjust: 100%;
+    user-select: none; -webkit-user-select: none;
   }
 
-  /* 全屏取景画布:内部分辨率 = 摄像头原生分辨率(≥1080p),CSS 用 cover 铺满屏幕 */
-  #view {
+  /* ===== 整体布局:顶部字标 · 中部取景框 · 底部控制 ===== */
+  .app {
     position: fixed; inset: 0;
-    width: 100%; height: 100%;
-    object-fit: cover;
-    display: block;
-    background: #000;
+    display: flex; flex-direction: column;
+    background:
+      radial-gradient(900px 600px at 50% -8%, #26221a 0%, transparent 62%),
+      var(--graphite);
   }
-  video#cam { display: none; }
+
+  /* ---------- 顶部字标条 ---------- */
+  .head {
+    flex: 0 0 auto;
+    padding: calc(var(--safe-t) + 14px) 20px 8px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .wordmark {
+    font-family: var(--mono); font-weight: 800;
+    font-size: 17px; letter-spacing: 4px;
+    color: var(--brass);
+  }
+  .wordmark small { color: var(--cream-dim); letter-spacing: 0; font-weight: 500; }
+  .ratio-toggle {
+    display: flex; gap: 2px;
+    background: var(--charcoal); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px;
+  }
+  .ratio-toggle button {
+    font: 600 12px var(--mono); color: var(--cream-dim);
+    background: transparent; border: none; cursor: pointer;
+    padding: 5px 11px; border-radius: 999px;
+    transition: background .15s, color .15s;
+  }
+  .ratio-toggle button.on { background: var(--brass); color: var(--graphite); }
+
+  /* ---------- 中部取景区 ---------- */
+  .stage {
+    flex: 1 1 auto;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    padding: 4px 0;
+  }
+  .viewport {
+    position: relative;
+    max-width: 100%; max-height: 100%;
+    border-radius: 16px; overflow: hidden;
+    background: #000;
+    box-shadow: 0 12px 40px rgba(0,0,0,.55), 0 0 0 1px var(--line);
+  }
+  #view { display: block; width: 100%; height: 100%; }
+
+  /* 取景框四角装饰(取景器质感) */
+  .corner {
+    position: absolute; width: 20px; height: 20px; z-index: 3;
+    border: 2px solid rgba(237,231,218,.55); pointer-events: none;
+  }
+  .corner.tl { top: 10px; left: 10px; border-right: 0; border-bottom: 0; border-radius: 6px 0 0 0; }
+  .corner.tr { top: 10px; right: 10px; border-left: 0; border-bottom: 0; border-radius: 0 6px 0 0; }
+  .corner.bl { bottom: 10px; left: 10px; border-right: 0; border-top: 0; border-radius: 0 0 0 6px; }
+  .corner.br { bottom: 10px; right: 10px; border-left: 0; border-top: 0; border-radius: 0 0 6px 0; }
+
+  .badge {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 3; font: 500 10.5px var(--mono); color: var(--cream-dim);
+    background: rgba(0,0,0,.4); padding: 3px 9px; border-radius: 999px;
+    letter-spacing: .5px;
+  }
+
+  /* ---------- 滤镜胶片栏 ---------- */
+  .filmstrip {
+    flex: 0 0 auto;
+    display: flex; gap: 10px; overflow-x: auto;
+    padding: 10px 20px 4px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .filmstrip::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: 0 0 auto;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    background: transparent; border: none; cursor: pointer;
+    padding: 4px 2px;
+  }
+  .chip .sw {
+    width: 44px; height: 44px; border-radius: 12px;
+    border: 2px solid transparent;
+    background: linear-gradient(135deg, var(--c-dark), var(--c-light));
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.3);
+    transition: transform .14s, border-color .14s;
+  }
+  .chip .nm {
+    font: 600 11px var(--sans); color: var(--cream-dim);
+    letter-spacing: .3px; transition: color .14s;
+  }
+  .chip.active .sw { border-color: var(--brass); transform: scale(1.06); }
+  .chip.active .nm { color: var(--brass); }
+  .chip:active .sw { transform: scale(.94); }
+
+  /* ---------- 底部控制条 ---------- */
+  .controls {
+    flex: 0 0 auto;
+    padding: 12px 34px calc(var(--safe-b) + 20px);
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  }
+  /* 左:翻转 */
+  .flip-btn {
+    justify-self: start;
+    width: 52px; height: 52px; border-radius: 50%;
+    background: var(--charcoal); border: 1px solid var(--line);
+    color: var(--cream); font-size: 22px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .12s, background .12s;
+  }
+  .flip-btn:active { transform: scale(.9); background: var(--charcoal-2); }
+
+  /* 中:实体黄铜快门 */
+  .shutter {
+    justify-self: center;
+    width: 76px; height: 76px; border-radius: 50%;
+    border: none; cursor: pointer; padding: 0;
+    background:
+      radial-gradient(circle at 38% 32%, #E8CE96 0%, var(--brass) 42%, var(--brass-amber) 78%, #6d5528 100%);
+    box-shadow:
+      0 0 0 4px var(--graphite),
+      0 0 0 6px rgba(201,161,94,.35),
+      0 6px 16px rgba(0,0,0,.5),
+      inset 0 2px 4px rgba(255,255,255,.4),
+      inset 0 -3px 6px rgba(0,0,0,.35);
+    transition: transform .1s;
+  }
+  .shutter:active { transform: scale(.9); }
+  .shutter:disabled { opacity: .5; cursor: default; }
+
+  /* 右:拍摄缩略图预览(替代原来那个看不懂的下载键) */
+  .thumb {
+    justify-self: end;
+    width: 52px; height: 52px; border-radius: 12px;
+    background: var(--charcoal); border: 1px solid var(--line);
+    overflow: hidden; cursor: pointer; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .12s;
+  }
+  .thumb:active { transform: scale(.92); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: none; }
+  .thumb.has img { display: block; }
+  .thumb .ph {
+    font-size: 20px; color: var(--cream-dim); opacity: .55;
+  }
+  .thumb.has .ph { display: none; }
 
   /* ===== 启动 / 权限遮罩 ===== */
   .gate {
     position: fixed; inset: 0; z-index: 30;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    gap: 18px; padding: 40px 28px;
-    background: radial-gradient(800px 500px at 50% 30%, #2a251f 0%, #000 70%);
+    gap: 20px; padding: 40px 30px;
+    background: radial-gradient(800px 520px at 50% 32%, #26221a 0%, #000 72%);
     text-align: center;
   }
   .gate .logo {
-    font-family: var(--mono); font-weight: 800; font-size: 26px;
-    color: #000; background: var(--kodak-yellow);
-    padding: 8px 16px; border-radius: 10px;
+    font-family: var(--mono); font-weight: 800; font-size: 24px;
+    letter-spacing: 5px; color: var(--brass);
+    border: 2px solid var(--brass); padding: 10px 20px; border-radius: 12px;
   }
-  .gate .logo small { color: var(--kodak-red); }
-  .gate p { font-size: 14px; color: var(--ink-dim); max-width: 320px; line-height: 1.6; }
+  .gate p { font-size: 14px; color: var(--cream-dim); max-width: 320px; line-height: 1.7; }
   .gate button {
-    font: 600 16px var(--sans);
-    color: #000; background: var(--kodak-yellow);
+    font: 700 16px var(--sans); letter-spacing: .5px;
+    color: var(--graphite); background: var(--brass);
     border: none; border-radius: 14px;
-    padding: 14px 32px; cursor: pointer;
+    padding: 15px 40px; cursor: pointer;
   }
   .gate button:active { transform: scale(.97); }
-  .gate .err { color: #ff8f8f; font-size: 13px; display: none; line-height: 1.6; }
-
-  /* ===== 顶部滤镜条 ===== */
-  .top {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 20;
-    padding: calc(var(--safe-t) + 12px) 14px 14px;
-    display: flex; gap: 10px; overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    background: linear-gradient(180deg, rgba(0,0,0,.55), transparent);
-  }
-  .top::-webkit-scrollbar { display: none; }
-  .chip {
-    flex: 0 0 auto;
-    display: flex; align-items: center; gap: 8px;
-    font: 600 14px var(--sans); color: var(--ink);
-    background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    border: 1px solid var(--line); border-radius: 999px;
-    padding: 9px 15px; cursor: pointer;
-    transition: transform .12s;
-  }
-  .chip:active { transform: scale(.95); }
-  .chip .sw {
-    width: 14px; height: 14px; border-radius: 4px;
-    border: 1px solid rgba(255,255,255,.25);
-    background: linear-gradient(135deg, var(--c-dark), var(--c-light));
-  }
-  .chip.active {
-    border-color: var(--kodak-yellow); color: #fff;
-    box-shadow: 0 0 0 2px rgba(255,181,0,.3);
-  }
-
-  /* ===== 底部控制条 ===== */
-  .bottom {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-    padding: 18px 30px calc(var(--safe-b) + 22px);
-    display: flex; align-items: center; justify-content: space-between;
-    background: linear-gradient(0deg, rgba(0,0,0,.55), transparent);
-  }
-  .icon-btn {
-    width: 52px; height: 52px; border-radius: 50%;
-    background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    border: 1px solid var(--line); color: var(--ink);
-    font-size: 22px; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .icon-btn:active { transform: scale(.92); }
-  .icon-btn:disabled { opacity: .4; }
-  .shutter {
-    width: 74px; height: 74px; border-radius: 50%;
-    background: #fff; border: 5px solid rgba(255,255,255,.35);
-    cursor: pointer; padding: 0;
-    box-shadow: 0 0 0 2px #000 inset;
-  }
-  .shutter:active { transform: scale(.93); }
+  .gate .err { color: #e79a8f; font-size: 13px; display: none; line-height: 1.6; max-width: 340px; }
 
   /* 拍照白闪 */
   .flash {
     position: fixed; inset: 0; z-index: 40;
     background: #fff; opacity: 0; pointer-events: none;
   }
-  .flash.go { animation: flash .32s ease-out; }
-  @keyframes flash { 0%{opacity:.9} 100%{opacity:0} }
+  .flash.go { animation: flash .3s ease-out; }
+  @keyframes flash { 0%{opacity:.85} 100%{opacity:0} }
 
-  /* 保存提示 */
+  /* Toast */
   .toast {
-    position: fixed; left: 50%; bottom: calc(var(--safe-b) + 120px);
+    position: fixed; left: 50%; bottom: calc(var(--safe-b) + 130px);
     transform: translateX(-50%) translateY(10px);
-    z-index: 25; opacity: 0; pointer-events: none;
-    background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    z-index: 45; opacity: 0; pointer-events: none;
+    background: var(--panel); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px 16px; font-size: 13px; text-align: center; max-width: 82vw;
+    padding: 10px 18px; font-size: 13px; text-align: center; max-width: 82vw;
     transition: opacity .2s, transform .2s;
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  .fps {
-    position: fixed; top: calc(var(--safe-t) + 66px); right: 14px; z-index: 20;
-    font: 500 11px var(--mono); color: var(--ink-dim);
-    background: rgba(0,0,0,.35); padding: 3px 7px; border-radius: 6px;
+  /* 大图预览层(点缩略图打开) */
+  .viewer {
+    position: fixed; inset: 0; z-index: 50;
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 20px; padding: calc(var(--safe-t) + 20px) 20px calc(var(--safe-b) + 20px);
+    background: rgba(0,0,0,.92);
   }
+  .viewer.show { display: flex; }
+  .viewer img { max-width: 100%; max-height: 74%; border-radius: 12px; object-fit: contain; }
+  .viewer .row { display: flex; gap: 14px; }
+  .viewer .row button {
+    font: 700 15px var(--sans); cursor: pointer; border-radius: 12px;
+    padding: 13px 26px; border: 1px solid var(--line);
+  }
+  .viewer .save { background: var(--brass); color: var(--graphite); border-color: var(--brass); }
+  .viewer .close { background: var(--charcoal); color: var(--cream); }
 </style>
 </head>
 <body>
-<canvas id="view"></canvas>
-<video id="cam" playsinline muted autoplay></video>
+<div class="app" id="app" hidden>
+  <!-- 顶部字标 + 比例切换 -->
+  <div class="head">
+    <div class="wordmark">CHARMERA<small> · webgl</small></div>
+    <div class="ratio-toggle" id="ratioToggle">
+      <button data-ratio="3:4">3:4</button>
+      <button data-ratio="9:16">9:16</button>
+      <button data-ratio="1:1">1:1</button>
+      <button data-ratio="full">满屏</button>
+    </div>
+  </div>
 
-<div class="top" id="top"></div>
-<div class="fps" id="fps" hidden></div>
+  <!-- 取景区 -->
+  <div class="stage">
+    <div class="viewport" id="viewport">
+      <canvas id="view"></canvas>
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+      <div class="badge" id="badge">—</div>
+    </div>
+  </div>
 
-<div class="bottom" id="bottom" hidden>
-  <button class="icon-btn" id="flipBtn" type="button" title="前后摄">⟳</button>
-  <button class="shutter" id="shutterBtn" type="button" title="拍照"></button>
-  <button class="icon-btn" id="dlBtn" type="button" title="保存上一张" disabled>↓</button>
+  <!-- 滤镜胶片栏 -->
+  <div class="filmstrip" id="filmstrip"></div>
+
+  <!-- 底部控制 -->
+  <div class="controls">
+    <button class="flip-btn" id="flipBtn" type="button" title="前后摄">⟲</button>
+    <button class="shutter" id="shutterBtn" type="button" title="拍照"></button>
+    <button class="thumb" id="thumbBtn" type="button" title="查看/保存上一张">
+      <span class="ph">▣</span>
+      <img id="thumbImg" alt="last shot" />
+    </button>
+  </div>
 </div>
 
 <div class="flash" id="flash"></div>
 <div class="toast" id="toast">已保存 / 已触发下载</div>
 
+<!-- 大图预览 -->
+<div class="viewer" id="viewer">
+  <img id="viewerImg" alt="preview" />
+  <div class="row">
+    <button class="save" id="viewerSave" type="button">保存到相册 / 下载</button>
+    <button class="close" id="viewerClose" type="button">返回取景</button>
+  </div>
+</div>
+
 <!-- 启动遮罩 -->
 <div class="gate" id="gate">
-  <div class="logo">Charmera<small>·</small></div>
+  <div class="logo">CHARMERA</div>
   <p>GPU 着色器实时双色调滤镜相机。点下方按钮开启摄像头,取景即所见即所得。图像全程在本机 GPU 处理,不上传。</p>
   <button id="startBtn" type="button">开启相机</button>
   <div class="err" id="gateErr"></div>
@@ -172,27 +309,28 @@
 "use strict";
 
 /* ============================================================
- *  滤镜配方 —— 色阶(levels)全部固定为最低的 2,即纯双色调阈值
- *  dark  = 暗端 RGB;light = 亮端主色 RGB
+ *  滤镜配方 —— 色阶(levels)固定为 2,即纯双色调阈值
+ *  顺序:黑白 → 黄 → 蓝 → 红
+ *  dark = 暗端 RGB;light = 亮端主色 RGB
  * ============================================================ */
 const FILTERS = {
-  red:    { label: "Red",    dark: [5, 4, 3], light: [253, 0, 1],     levels: 2 },
-  blue:   { label: "Blue",   dark: [2, 4, 5], light: [1, 0, 251],     levels: 2 },
-  yellow: { label: "Yellow", dark: [5, 3, 4], light: [248, 211, 78],  levels: 2 },
-  gray:   { label: "Gray",   dark: [8, 8, 7], light: [204, 207, 188], levels: 2 },
+  gray:   { label: "黑白", dark: [8, 8, 7], light: [204, 207, 188], levels: 2 },
+  yellow: { label: "黄",   dark: [5, 3, 4], light: [248, 211, 78],  levels: 2 },
+  blue:   { label: "蓝",   dark: [2, 4, 5], light: [1, 0, 251],     levels: 2 },
+  red:    { label: "红",   dark: [5, 4, 3], light: [253, 0, 1],     levels: 2 },
 };
+const FIRST_FILTER = "gray";
 
 /* ------------------------------------------------------------
  *  LUT 构建 —— 与 CPU 参考版逐字节一致
- *  返回 256*3 的 Uint8ClampedArray:黑->主色的线性渐变,floor 量化成 levels 台阶。
- *  这张表会被原样上传成 256x1 的纹理,shader 用 round(亮度) 做整数查表,
- *  和 CPU 的 lut[round(lum)*3] 完全等价。
+ *  256*3 的 Uint8ClampedArray:黑->主色的线性渐变,floor 量化成 levels 台阶。
+ *  会原样上传成 256x1 纹理,shader 用 round(亮度) 整数查表,和 CPU 完全等价。
  * ------------------------------------------------------------ */
 function buildLUT(dark, light, levels) {
   const lut = new Uint8ClampedArray(256 * 3);
   const denom = Math.max(levels - 1, 1);
   for (let i = 0; i < 256; i++) {
-    const q = Math.min(Math.floor((i / 256) * levels), levels - 1); // floor 量化
+    const q = Math.min(Math.floor((i / 256) * levels), levels - 1);
     const step = denom === 0 ? 0 : q / denom;
     const o = i * 3;
     lut[o]     = Math.round(dark[0] + step * (light[0] - dark[0]));
@@ -203,11 +341,10 @@ function buildLUT(dark, light, levels) {
 }
 
 /* ============================================================
- *  着色器
- *  片元逻辑严格复刻 CPU:
- *    lum = 0.299R + 0.587G + 0.114B     (在 8-bit sRGB 字节值域上算)
- *    idx = round(lum)                    (0..255 整数索引)
- *    out = LUT[idx]                       (256x1 纹理,texelFetch 精确取,零插值)
+ *  着色器(逻辑严格复刻 CPU)
+ *    lum = 0.299R + 0.587G + 0.114B  (8-bit sRGB 字节值域)
+ *    idx = round(lum)                 (0..255)
+ *    out = LUT[idx]                    (256x1 纹理,texelFetch 零插值)
  * ============================================================ */
 const VERT_SRC = `#version 300 es
 in vec2 a_pos;
@@ -215,10 +352,8 @@ out vec2 v_uv;
 uniform bool u_mirror;
 void main() {
   vec2 uv = a_pos * 0.5 + 0.5;
-  // 视频首行(顶部)上传到纹理 t=0;屏幕顶部对应 clip.y=+1 -> uv.y=1。
-  // 需要翻转 v 让画面正立(不用 UNPACK_FLIP_Y,避开 iOS 对 video 纹理翻转的坑)。
-  uv.y = 1.0 - uv.y;
-  if (u_mirror) uv.x = 1.0 - uv.x; // 前摄水平镜像,与系统相机行为一致
+  uv.y = 1.0 - uv.y;               // 翻正画面(避开 iOS video 纹理翻转坑)
+  if (u_mirror) uv.x = 1.0 - uv.x; // 前摄水平镜像
   v_uv = uv;
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }`;
@@ -226,16 +361,15 @@ void main() {
 const FRAG_SRC = `#version 300 es
 precision highp float;
 in vec2 v_uv;
-uniform sampler2D u_video; // 摄像头帧(RGBA8,未做 sRGB->linear 转换,即原始字节)
-uniform sampler2D u_lut;   // 256x1 双色调查找表(RGBA8, NEAREST)
+uniform sampler2D u_video;
+uniform sampler2D u_lut;
 out vec4 fragColor;
 void main() {
   vec4 c = texture(u_video, v_uv);
-  // 采样返回的是 归一化字节 = byte/255;乘回 255 得到 CPU 用的字节值域。
   float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114)) * 255.0;
-  int idx = int(floor(lum + 0.5));        // floor(x+0.5) == Math.round(x)(x>=0)
+  int idx = int(floor(lum + 0.5));
   idx = clamp(idx, 0, 255);
-  vec3 mapped = texelFetch(u_lut, ivec2(idx, 0), 0).rgb; // 整数取,零插值,等价 lut[idx]
+  vec3 mapped = texelFetch(u_lut, ivec2(idx, 0), 0).rgb;
   fragColor = vec4(mapped, 1.0);
 }`;
 
@@ -243,35 +377,28 @@ void main() {
  *  状态 & DOM
  * ============================================================ */
 const $ = (id) => document.getElementById(id);
-const cam = $("cam");
+const cam  = document.createElement("video");
+cam.playsInline = true; cam.muted = true; cam.autoplay = true;
+cam.setAttribute("playsinline", ""); cam.setAttribute("muted", "");
 const view = $("view");
 
 const state = {
-  current: "red",
+  current: FIRST_FILTER,
   facing: "environment",
+  ratio: "3:4",          // 3:4 | 9:16 | 1:1 | full
   stream: null,
   running: false,
   lastShotURL: null,
   useRVFC: typeof cam.requestVideoFrameCallback === "function",
 };
 
-/* ---------- WebGL2 上下文 ---------- */
-let gl = null;
-let prog = null;
-let quadVBO = null;
-let videoTex = null;
-let lutTex = null;
-let uMirrorLoc = null;
+/* ---------- WebGL2 ---------- */
+let gl = null, prog = null, quadVBO = null, videoTex = null, lutTex = null, uMirrorLoc = null;
 
 function initGL() {
   gl = view.getContext("webgl2", {
-    alpha: false,
-    antialias: false,
-    depth: false,
-    stencil: false,
-    // 保留绘制缓冲,保证 toBlob 能抓到当前帧(连续渲染下 back buffer 会被清)
-    preserveDrawingBuffer: true,
-    premultipliedAlpha: false,
+    alpha: false, antialias: false, depth: false, stencil: false,
+    preserveDrawingBuffer: true, premultipliedAlpha: false,
     powerPreference: "high-performance",
   });
   if (!gl) return false;
@@ -280,11 +407,9 @@ function initGL() {
   if (!prog) return false;
   gl.useProgram(prog);
 
-  // 全屏 quad(triangle strip)
   quadVBO = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
-  gl.bufferData(gl.ARRAY_BUFFER,
-    new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
   const aPos = gl.getAttribLocation(prog, "a_pos");
   gl.enableVertexAttribArray(aPos);
   gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
@@ -293,12 +418,10 @@ function initGL() {
   gl.uniform1i(gl.getUniformLocation(prog, "u_video"), 0);
   gl.uniform1i(gl.getUniformLocation(prog, "u_lut"), 1);
 
-  // 上传设置:关闭隐式颜色空间转换,保证拿到原始 sRGB 字节;不预乘;不翻转(shader 里翻)。
   gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
-  // 视频纹理(内容每帧更新)
   videoTex = gl.createTexture();
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, videoTex);
@@ -307,7 +430,6 @@ function initGL() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  // LUT 纹理(256x1),NEAREST 是关键:LINEAR 会把硬色阶边界抹成渐变
   lutTex = gl.createTexture();
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, lutTex);
@@ -330,15 +452,12 @@ function compileShader(type, src) {
   }
   return sh;
 }
-
 function buildProgram(vsSrc, fsSrc) {
   const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
   const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
   if (!vs || !fs) return null;
   const p = gl.createProgram();
-  gl.attachShader(p, vs);
-  gl.attachShader(p, fs);
-  gl.linkProgram(p);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
     console.error("program link error:", gl.getProgramInfoLog(p));
     return null;
@@ -346,16 +465,13 @@ function buildProgram(vsSrc, fsSrc) {
   return p;
 }
 
-/* ---------- 上传 LUT 到 256x1 纹理 ---------- */
+/* ---------- 上传 LUT ---------- */
 function uploadLUT(key) {
   const f = FILTERS[key];
-  const lut3 = buildLUT(f.dark, f.light, f.levels); // 256*3
+  const lut3 = buildLUT(f.dark, f.light, f.levels);
   const rgba = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
-    rgba[i * 4]     = lut3[i * 3];
-    rgba[i * 4 + 1] = lut3[i * 3 + 1];
-    rgba[i * 4 + 2] = lut3[i * 3 + 2];
-    rgba[i * 4 + 3] = 255;
+    rgba[i*4] = lut3[i*3]; rgba[i*4+1] = lut3[i*3+1]; rgba[i*4+2] = lut3[i*3+2]; rgba[i*4+3] = 255;
   }
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, lutTex);
@@ -363,43 +479,71 @@ function uploadLUT(key) {
 }
 
 /* ============================================================
- *  滤镜 chips
+ *  滤镜 chips(顺序 = FILTERS 定义顺序:黑白/黄/蓝/红)
  * ============================================================ */
-const topEl = $("top");
+const filmstrip = $("filmstrip");
 Object.entries(FILTERS).forEach(([key, f]) => {
   const chip = document.createElement("button");
   chip.className = "chip";
   chip.dataset.filter = key;
   chip.style.setProperty("--c-dark", `rgb(${f.dark.join(",")})`);
   chip.style.setProperty("--c-light", `rgb(${f.light.join(",")})`);
-  chip.innerHTML = `<span class="sw"></span>${f.label}`;
+  chip.innerHTML = `<span class="sw"></span><span class="nm">${f.label}</span>`;
   chip.addEventListener("click", () => selectFilter(key));
-  topEl.appendChild(chip);
+  filmstrip.appendChild(chip);
 });
-
 function selectFilter(key) {
   state.current = key;
   uploadLUT(key);
   document.querySelectorAll(".chip").forEach((c) =>
-    c.classList.toggle("active", c.dataset.filter === key)
-  );
+    c.classList.toggle("active", c.dataset.filter === key));
 }
+
+/* ============================================================
+ *  比例切换 —— 只裁剪取景框显示区域,不改处理分辨率
+ *  full = 满屏铺满;其余按目标宽高比对视频做居中裁剪(cover)
+ * ============================================================ */
+const RATIO_VAL = { "3:4": 3/4, "9:16": 9/16, "1:1": 1, "full": null };
+function setRatio(r) {
+  state.ratio = r;
+  document.querySelectorAll("#ratioToggle button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.ratio === r));
+  layoutViewport();
+}
+function layoutViewport() {
+  const stage = document.querySelector(".stage");
+  const vp = $("viewport");
+  const availW = stage.clientWidth;
+  const availH = stage.clientHeight;
+  let ar = RATIO_VAL[state.ratio];        // 目标 宽/高
+  if (ar === null) {
+    // 满屏:铺满取景区
+    vp.style.width = availW + "px";
+    vp.style.height = availH + "px";
+  } else {
+    // 在可用区内放最大的该比例矩形
+    let w = availW, h = w / ar;
+    if (h > availH) { h = availH; w = h * ar; }
+    vp.style.width = Math.round(w) + "px";
+    vp.style.height = Math.round(h) + "px";
+  }
+}
+window.addEventListener("resize", layoutViewport);
 
 /* ============================================================
  *  摄像头
  * ============================================================ */
 async function startCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    return showErr("此浏览器不支持摄像头接口(navigator.mediaDevices.getUserMedia 缺失)。");
+    return showErr("此浏览器不支持摄像头接口(getUserMedia 缺失)。");
   }
   if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
 
   try {
-    // 请求 1080p;拿不到则由浏览器给最接近的分辨率(处理分辨率 = 实际帧尺寸,不降采样)
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: state.facing },
-        width: { ideal: 1920 },
+        width:  { ideal: 1920 },
         height: { ideal: 1080 },
       },
       audio: false,
@@ -414,53 +558,41 @@ async function startCamera() {
   await cam.play().catch(() => {});
 
   $("gate").style.display = "none";
-  $("bottom").hidden = false;
-  $("fps").hidden = false;
+  $("app").hidden = false;
+  layoutViewport();
 
-  if (!state.running) {
-    state.running = true;
-    scheduleFrame();
-  }
+  if (!state.running) { state.running = true; scheduleFrame(); }
 }
-
 function showErr(msg) {
   const el = $("gateErr");
-  el.textContent = msg;
-  el.style.display = "block";
+  el.textContent = msg; el.style.display = "block";
   $("gate").style.display = "flex";
 }
 
 /* ============================================================
  *  渲染循环
- *  优先 requestVideoFrameCallback(有新帧才处理,省电、免重复上传),
- *  否则退回 requestAnimationFrame。
  * ============================================================ */
 let lastT = performance.now(), frames = 0, fpsAcc = 0;
-
 function scheduleFrame() {
   if (!state.running) return;
   if (state.useRVFC) cam.requestVideoFrameCallback(onFrame);
   else requestAnimationFrame(onFrame);
 }
-
 function onFrame() {
   if (!state.running) return;
   renderFrame();
   scheduleFrame();
 }
-
 function renderFrame() {
   const vw = cam.videoWidth, vh = cam.videoHeight;
   if (!vw || !vh) return;
 
-  // 画布内部分辨率 = 摄像头原生分辨率(≥1080p),GPU 逐像素并行,1:1 处理不降采样
+  // 画布内部分辨率 = 摄像头原生分辨率(≥1080p),GPU 1:1 处理,不降采样
   if (view.width !== vw || view.height !== vh) {
-    view.width = vw;
-    view.height = vh;
+    view.width = vw; view.height = vh;
     gl.viewport(0, 0, vw, vh);
   }
 
-  // 上传当前视频帧
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, videoTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cam);
@@ -468,46 +600,55 @@ function renderFrame() {
   gl.uniform1i(uMirrorLoc, state.facing === "user" ? 1 : 0);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-  // FPS
   frames++;
   const now = performance.now();
   fpsAcc += now - lastT; lastT = now;
   if (frames >= 15) {
-    $("fps").textContent = (1000 / (fpsAcc / frames)).toFixed(0) + " fps · " + vw + "×" + vh;
+    $("badge").textContent = (1000 / (fpsAcc / frames)).toFixed(0) + " FPS · " + vw + "×" + vh;
     frames = 0; fpsAcc = 0;
   }
 }
 
-/* ---------- 拍照:抓当前 GL 画布(preserveDrawingBuffer 保证有内容) ---------- */
+/* ============================================================
+ *  拍照 —— 按当前比例裁剪导出
+ * ============================================================ */
 function takePhoto() {
-  // 先补一帧,确保画布是最新画面
-  renderFrame();
+  renderFrame(); // 补一帧确保最新
 
   $("flash").classList.remove("go");
   void $("flash").offsetWidth;
   $("flash").classList.add("go");
 
-  view.toBlob((blob) => {
+  const vw = view.width, vh = view.height;
+  let ar = RATIO_VAL[state.ratio];
+  let sx = 0, sy = 0, sw = vw, sh = vh;
+  if (ar !== null) {
+    // 以视频为源做居中裁剪到目标比例
+    if (vw / vh > ar) { sw = Math.round(vh * ar); sx = Math.round((vw - sw) / 2); }
+    else              { sh = Math.round(vw / ar); sy = Math.round((vh - sh) / 2); }
+  }
+  const out = document.createElement("canvas");
+  out.width = sw; out.height = sh;
+  out.getContext("2d").drawImage(view, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  out.toBlob((blob) => {
     if (!blob) { toast("拍照失败,请重试"); return; }
     if (state.lastShotURL) URL.revokeObjectURL(state.lastShotURL);
     state.lastShotURL = URL.createObjectURL(blob);
-    const dl = $("dlBtn");
-    dl.disabled = false;
+    const t = $("thumbBtn");
+    t.classList.add("has");
+    $("thumbImg").src = state.lastShotURL;
     saveBlob(blob);
   }, "image/png");
 }
-
 function saveBlob(blob) {
   const a = document.createElement("a");
   a.download = `charmera-${state.current}-${Date.now()}.png`;
   a.href = URL.createObjectURL(blob);
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   toast("已保存 / 已触发下载");
 }
-
 function toast(msg) {
   const t = $("toast");
   if (msg) t.textContent = msg;
@@ -516,33 +657,41 @@ function toast(msg) {
   toast._t = setTimeout(() => t.classList.remove("show"), 1600);
 }
 
-/* ---------- 前后摄切换 ---------- */
+/* ---------- 前后摄 ---------- */
 function flipCamera() {
   state.facing = state.facing === "environment" ? "user" : "environment";
   startCamera();
 }
 
+/* ---------- 大图预览 ---------- */
+function openViewer() {
+  if (!state.lastShotURL) { toast("还没有拍摄照片"); return; }
+  $("viewerImg").src = state.lastShotURL;
+  $("viewer").classList.add("show");
+}
+function closeViewer() { $("viewer").classList.remove("show"); }
+
 /* ============================================================
  *  事件绑定
  * ============================================================ */
-$("startBtn").addEventListener("click", () => {
-  // iOS 要求 getUserMedia 由用户手势触发,这里在点击回调内启动
-  startCamera();
-});
+$("startBtn").addEventListener("click", startCamera);
 $("shutterBtn").addEventListener("click", takePhoto);
 $("flipBtn").addEventListener("click", flipCamera);
-$("dlBtn").addEventListener("click", () => {
+$("thumbBtn").addEventListener("click", openViewer);
+$("viewerClose").addEventListener("click", closeViewer);
+$("viewerSave").addEventListener("click", () => {
   if (!state.lastShotURL) return;
   const a = document.createElement("a");
   a.download = `charmera-${state.current}-${Date.now()}.png`;
   a.href = state.lastShotURL;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  document.body.appendChild(a); a.click(); a.remove();
   toast("已保存 / 已触发下载");
 });
+$("ratioToggle").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-ratio]");
+  if (b) setRatio(b.dataset.ratio);
+});
 
-// 页面隐藏时停流省电,回来自动恢复
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
@@ -553,7 +702,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ============================================================
- *  启动:先建 GL,再挂初始滤镜
+ *  启动
  * ============================================================ */
 (function boot() {
   if (!initGL()) {
@@ -561,7 +710,8 @@ document.addEventListener("visibilitychange", () => {
     showErr("你的浏览器不支持 WebGL2。请升级到 iOS 15+ Safari 或较新版本的 Chrome / Android 浏览器。");
     return;
   }
-  selectFilter("red"); // 上传初始 LUT + 高亮 chip
+  selectFilter(FIRST_FILTER); // 默认黑白 + 上传初始 LUT
+  setRatio("3:4");            // 默认 3:4 取景
 })();
 </script>
 </body>
