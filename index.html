@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#000000" />
+<title>Charmera 实时滤镜 · WebGL</title>
+<style>
+  :root {
+    --kodak-yellow: #ffb500;
+    --kodak-red: #ed1c24;
+    --ink: #e9e2d4;
+    --ink-dim: #b3a892;
+    --panel: rgba(30,26,22,.72);
+    --line: rgba(255,255,255,.14);
+    --safe-t: env(safe-area-inset-top, 0px);
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
+  html, body {
+    height: 100%; width: 100%;
+    background: #000; color: var(--ink);
+    font-family: var(--sans);
+    overflow: hidden;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* 全屏取景画布:内部分辨率 = 摄像头原生分辨率(≥1080p),CSS 用 cover 铺满屏幕 */
+  #view {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    background: #000;
+  }
+  video#cam { display: none; }
+
+  /* ===== 启动 / 权限遮罩 ===== */
+  .gate {
+    position: fixed; inset: 0; z-index: 30;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 18px; padding: 40px 28px;
+    background: radial-gradient(800px 500px at 50% 30%, #2a251f 0%, #000 70%);
+    text-align: center;
+  }
+  .gate .logo {
+    font-family: var(--mono); font-weight: 800; font-size: 26px;
+    color: #000; background: var(--kodak-yellow);
+    padding: 8px 16px; border-radius: 10px;
+  }
+  .gate .logo small { color: var(--kodak-red); }
+  .gate p { font-size: 14px; color: var(--ink-dim); max-width: 320px; line-height: 1.6; }
+  .gate button {
+    font: 600 16px var(--sans);
+    color: #000; background: var(--kodak-yellow);
+    border: none; border-radius: 14px;
+    padding: 14px 32px; cursor: pointer;
+  }
+  .gate button:active { transform: scale(.97); }
+  .gate .err { color: #ff8f8f; font-size: 13px; display: none; line-height: 1.6; }
+
+  /* ===== 顶部滤镜条 ===== */
+  .top {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+    padding: calc(var(--safe-t) + 12px) 14px 14px;
+    display: flex; gap: 10px; overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    background: linear-gradient(180deg, rgba(0,0,0,.55), transparent);
+  }
+  .top::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 8px;
+    font: 600 14px var(--sans); color: var(--ink);
+    background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 9px 15px; cursor: pointer;
+    transition: transform .12s;
+  }
+  .chip:active { transform: scale(.95); }
+  .chip .sw {
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid rgba(255,255,255,.25);
+    background: linear-gradient(135deg, var(--c-dark), var(--c-light));
+  }
+  .chip.active {
+    border-color: var(--kodak-yellow); color: #fff;
+    box-shadow: 0 0 0 2px rgba(255,181,0,.3);
+  }
+
+  /* ===== 底部控制条 ===== */
+  .bottom {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    padding: 18px 30px calc(var(--safe-b) + 22px);
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(0deg, rgba(0,0,0,.55), transparent);
+  }
+  .icon-btn {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line); color: var(--ink);
+    font-size: 22px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:active { transform: scale(.92); }
+  .icon-btn:disabled { opacity: .4; }
+  .shutter {
+    width: 74px; height: 74px; border-radius: 50%;
+    background: #fff; border: 5px solid rgba(255,255,255,.35);
+    cursor: pointer; padding: 0;
+    box-shadow: 0 0 0 2px #000 inset;
+  }
+  .shutter:active { transform: scale(.93); }
+
+  /* 拍照白闪 */
+  .flash {
+    position: fixed; inset: 0; z-index: 40;
+    background: #fff; opacity: 0; pointer-events: none;
+  }
+  .flash.go { animation: flash .32s ease-out; }
+  @keyframes flash { 0%{opacity:.9} 100%{opacity:0} }
+
+  /* 保存提示 */
+  .toast {
+    position: fixed; left: 50%; bottom: calc(var(--safe-b) + 120px);
+    transform: translateX(-50%) translateY(10px);
+    z-index: 25; opacity: 0; pointer-events: none;
+    background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 16px; font-size: 13px; text-align: center; max-width: 82vw;
+    transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .fps {
+    position: fixed; top: calc(var(--safe-t) + 66px); right: 14px; z-index: 20;
+    font: 500 11px var(--mono); color: var(--ink-dim);
+    background: rgba(0,0,0,.35); padding: 3px 7px; border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<video id="cam" playsinline muted autoplay></video>
+
+<div class="top" id="top"></div>
+<div class="fps" id="fps" hidden></div>
+
+<div class="bottom" id="bottom" hidden>
+  <button class="icon-btn" id="flipBtn" type="button" title="前后摄">⟳</button>
+  <button class="shutter" id="shutterBtn" type="button" title="拍照"></button>
+  <button class="icon-btn" id="dlBtn" type="button" title="保存上一张" disabled>↓</button>
+</div>
+
+<div class="flash" id="flash"></div>
+<div class="toast" id="toast">已保存 / 已触发下载</div>
+
+<!-- 启动遮罩 -->
+<div class="gate" id="gate">
+  <div class="logo">Charmera<small>·</small></div>
+  <p>GPU 着色器实时双色调滤镜相机。点下方按钮开启摄像头,取景即所见即所得。图像全程在本机 GPU 处理,不上传。</p>
+  <button id="startBtn" type="button">开启相机</button>
+  <div class="err" id="gateErr"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+ *  滤镜配方 —— 色阶(levels)全部固定为最低的 2,即纯双色调阈值
+ *  dark  = 暗端 RGB;light = 亮端主色 RGB
+ * ============================================================ */
+const FILTERS = {
+  red:    { label: "Red",    dark: [5, 4, 3], light: [253, 0, 1],     levels: 2 },
+  blue:   { label: "Blue",   dark: [2, 4, 5], light: [1, 0, 251],     levels: 2 },
+  yellow: { label: "Yellow", dark: [5, 3, 4], light: [248, 211, 78],  levels: 2 },
+  gray:   { label: "Gray",   dark: [8, 8, 7], light: [204, 207, 188], levels: 2 },
+};
+
+/* ------------------------------------------------------------
+ *  LUT 构建 —— 与 CPU 参考版逐字节一致
+ *  返回 256*3 的 Uint8ClampedArray:黑->主色的线性渐变,floor 量化成 levels 台阶。
+ *  这张表会被原样上传成 256x1 的纹理,shader 用 round(亮度) 做整数查表,
+ *  和 CPU 的 lut[round(lum)*3] 完全等价。
+ * ------------------------------------------------------------ */
+function buildLUT(dark, light, levels) {
+  const lut = new Uint8ClampedArray(256 * 3);
+  const denom = Math.max(levels - 1, 1);
+  for (let i = 0; i < 256; i++) {
+    const q = Math.min(Math.floor((i / 256) * levels), levels - 1); // floor 量化
+    const step = denom === 0 ? 0 : q / denom;
+    const o = i * 3;
+    lut[o]     = Math.round(dark[0] + step * (light[0] - dark[0]));
+    lut[o + 1] = Math.round(dark[1] + step * (light[1] - dark[1]));
+    lut[o + 2] = Math.round(dark[2] + step * (light[2] - dark[2]));
+  }
+  return lut;
+}
+
+/* ============================================================
+ *  着色器
+ *  片元逻辑严格复刻 CPU:
+ *    lum = 0.299R + 0.587G + 0.114B     (在 8-bit sRGB 字节值域上算)
+ *    idx = round(lum)                    (0..255 整数索引)
+ *    out = LUT[idx]                       (256x1 纹理,texelFetch 精确取,零插值)
+ * ============================================================ */
+const VERT_SRC = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+uniform bool u_mirror;
+void main() {
+  vec2 uv = a_pos * 0.5 + 0.5;
+  // 视频首行(顶部)上传到纹理 t=0;屏幕顶部对应 clip.y=+1 -> uv.y=1。
+  // 需要翻转 v 让画面正立(不用 UNPACK_FLIP_Y,避开 iOS 对 video 纹理翻转的坑)。
+  uv.y = 1.0 - uv.y;
+  if (u_mirror) uv.x = 1.0 - uv.x; // 前摄水平镜像,与系统相机行为一致
+  v_uv = uv;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+const FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_video; // 摄像头帧(RGBA8,未做 sRGB->linear 转换,即原始字节)
+uniform sampler2D u_lut;   // 256x1 双色调查找表(RGBA8, NEAREST)
+out vec4 fragColor;
+void main() {
+  vec4 c = texture(u_video, v_uv);
+  // 采样返回的是 归一化字节 = byte/255;乘回 255 得到 CPU 用的字节值域。
+  float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114)) * 255.0;
+  int idx = int(floor(lum + 0.5));        // floor(x+0.5) == Math.round(x)(x>=0)
+  idx = clamp(idx, 0, 255);
+  vec3 mapped = texelFetch(u_lut, ivec2(idx, 0), 0).rgb; // 整数取,零插值,等价 lut[idx]
+  fragColor = vec4(mapped, 1.0);
+}`;
+
+/* ============================================================
+ *  状态 & DOM
+ * ============================================================ */
+const $ = (id) => document.getElementById(id);
+const cam = $("cam");
+const view = $("view");
+
+const state = {
+  current: "red",
+  facing: "environment",
+  stream: null,
+  running: false,
+  lastShotURL: null,
+  useRVFC: typeof cam.requestVideoFrameCallback === "function",
+};
+
+/* ---------- WebGL2 上下文 ---------- */
+let gl = null;
+let prog = null;
+let quadVBO = null;
+let videoTex = null;
+let lutTex = null;
+let uMirrorLoc = null;
+
+function initGL() {
+  gl = view.getContext("webgl2", {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    // 保留绘制缓冲,保证 toBlob 能抓到当前帧(连续渲染下 back buffer 会被清)
+    preserveDrawingBuffer: true,
+    premultipliedAlpha: false,
+    powerPreference: "high-performance",
+  });
+  if (!gl) return false;
+
+  prog = buildProgram(VERT_SRC, FRAG_SRC);
+  if (!prog) return false;
+  gl.useProgram(prog);
+
+  // 全屏 quad(triangle strip)
+  quadVBO = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, "a_pos");
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  uMirrorLoc = gl.getUniformLocation(prog, "u_mirror");
+  gl.uniform1i(gl.getUniformLocation(prog, "u_video"), 0);
+  gl.uniform1i(gl.getUniformLocation(prog, "u_lut"), 1);
+
+  // 上传设置:关闭隐式颜色空间转换,保证拿到原始 sRGB 字节;不预乘;不翻转(shader 里翻)。
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+
+  // 视频纹理(内容每帧更新)
+  videoTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, videoTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  // LUT 纹理(256x1),NEAREST 是关键:LINEAR 会把硬色阶边界抹成渐变
+  lutTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, lutTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  return true;
+}
+
+function compileShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    console.error("shader compile error:", gl.getShaderInfoLog(sh), "\n", src);
+    gl.deleteShader(sh);
+    return null;
+  }
+  return sh;
+}
+
+function buildProgram(vsSrc, fsSrc) {
+  const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+  const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+  if (!vs || !fs) return null;
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error("program link error:", gl.getProgramInfoLog(p));
+    return null;
+  }
+  return p;
+}
+
+/* ---------- 上传 LUT 到 256x1 纹理 ---------- */
+function uploadLUT(key) {
+  const f = FILTERS[key];
+  const lut3 = buildLUT(f.dark, f.light, f.levels); // 256*3
+  const rgba = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    rgba[i * 4]     = lut3[i * 3];
+    rgba[i * 4 + 1] = lut3[i * 3 + 1];
+    rgba[i * 4 + 2] = lut3[i * 3 + 2];
+    rgba[i * 4 + 3] = 255;
+  }
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, lutTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+}
+
+/* ============================================================
+ *  滤镜 chips
+ * ============================================================ */
+const topEl = $("top");
+Object.entries(FILTERS).forEach(([key, f]) => {
+  const chip = document.createElement("button");
+  chip.className = "chip";
+  chip.dataset.filter = key;
+  chip.style.setProperty("--c-dark", `rgb(${f.dark.join(",")})`);
+  chip.style.setProperty("--c-light", `rgb(${f.light.join(",")})`);
+  chip.innerHTML = `<span class="sw"></span>${f.label}`;
+  chip.addEventListener("click", () => selectFilter(key));
+  topEl.appendChild(chip);
+});
+
+function selectFilter(key) {
+  state.current = key;
+  uploadLUT(key);
+  document.querySelectorAll(".chip").forEach((c) =>
+    c.classList.toggle("active", c.dataset.filter === key)
+  );
+}
+
+/* ============================================================
+ *  摄像头
+ * ============================================================ */
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return showErr("此浏览器不支持摄像头接口(navigator.mediaDevices.getUserMedia 缺失)。");
+  }
+  if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+
+  try {
+    // 请求 1080p;拿不到则由浏览器给最接近的分辨率(处理分辨率 = 实际帧尺寸,不降采样)
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: state.facing },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false,
+    });
+  } catch (e) {
+    const name = (e && e.name) ? e.name : String(e);
+    return showErr("无法访问摄像头:" + name +
+      "。请确认已授权,且页面通过 HTTPS 打开(file:// / http 下 iOS Safari 无法调用摄像头)。");
+  }
+
+  cam.srcObject = state.stream;
+  await cam.play().catch(() => {});
+
+  $("gate").style.display = "none";
+  $("bottom").hidden = false;
+  $("fps").hidden = false;
+
+  if (!state.running) {
+    state.running = true;
+    scheduleFrame();
+  }
+}
+
+function showErr(msg) {
+  const el = $("gateErr");
+  el.textContent = msg;
+  el.style.display = "block";
+  $("gate").style.display = "flex";
+}
+
+/* ============================================================
+ *  渲染循环
+ *  优先 requestVideoFrameCallback(有新帧才处理,省电、免重复上传),
+ *  否则退回 requestAnimationFrame。
+ * ============================================================ */
+let lastT = performance.now(), frames = 0, fpsAcc = 0;
+
+function scheduleFrame() {
+  if (!state.running) return;
+  if (state.useRVFC) cam.requestVideoFrameCallback(onFrame);
+  else requestAnimationFrame(onFrame);
+}
+
+function onFrame() {
+  if (!state.running) return;
+  renderFrame();
+  scheduleFrame();
+}
+
+function renderFrame() {
+  const vw = cam.videoWidth, vh = cam.videoHeight;
+  if (!vw || !vh) return;
+
+  // 画布内部分辨率 = 摄像头原生分辨率(≥1080p),GPU 逐像素并行,1:1 处理不降采样
+  if (view.width !== vw || view.height !== vh) {
+    view.width = vw;
+    view.height = vh;
+    gl.viewport(0, 0, vw, vh);
+  }
+
+  // 上传当前视频帧
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, videoTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cam);
+
+  gl.uniform1i(uMirrorLoc, state.facing === "user" ? 1 : 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  // FPS
+  frames++;
+  const now = performance.now();
+  fpsAcc += now - lastT; lastT = now;
+  if (frames >= 15) {
+    $("fps").textContent = (1000 / (fpsAcc / frames)).toFixed(0) + " fps · " + vw + "×" + vh;
+    frames = 0; fpsAcc = 0;
+  }
+}
+
+/* ---------- 拍照:抓当前 GL 画布(preserveDrawingBuffer 保证有内容) ---------- */
+function takePhoto() {
+  // 先补一帧,确保画布是最新画面
+  renderFrame();
+
+  $("flash").classList.remove("go");
+  void $("flash").offsetWidth;
+  $("flash").classList.add("go");
+
+  view.toBlob((blob) => {
+    if (!blob) { toast("拍照失败,请重试"); return; }
+    if (state.lastShotURL) URL.revokeObjectURL(state.lastShotURL);
+    state.lastShotURL = URL.createObjectURL(blob);
+    const dl = $("dlBtn");
+    dl.disabled = false;
+    saveBlob(blob);
+  }, "image/png");
+}
+
+function saveBlob(blob) {
+  const a = document.createElement("a");
+  a.download = `charmera-${state.current}-${Date.now()}.png`;
+  a.href = URL.createObjectURL(blob);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast("已保存 / 已触发下载");
+}
+
+function toast(msg) {
+  const t = $("toast");
+  if (msg) t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+/* ---------- 前后摄切换 ---------- */
+function flipCamera() {
+  state.facing = state.facing === "environment" ? "user" : "environment";
+  startCamera();
+}
+
+/* ============================================================
+ *  事件绑定
+ * ============================================================ */
+$("startBtn").addEventListener("click", () => {
+  // iOS 要求 getUserMedia 由用户手势触发,这里在点击回调内启动
+  startCamera();
+});
+$("shutterBtn").addEventListener("click", takePhoto);
+$("flipBtn").addEventListener("click", flipCamera);
+$("dlBtn").addEventListener("click", () => {
+  if (!state.lastShotURL) return;
+  const a = document.createElement("a");
+  a.download = `charmera-${state.current}-${Date.now()}.png`;
+  a.href = state.lastShotURL;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast("已保存 / 已触发下载");
+});
+
+// 页面隐藏时停流省电,回来自动恢复
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+    state.running = false;
+  } else if (cam.srcObject && !state.running) {
+    startCamera();
+  }
+});
+
+/* ============================================================
+ *  启动:先建 GL,再挂初始滤镜
+ * ============================================================ */
+(function boot() {
+  if (!initGL()) {
+    $("startBtn").disabled = true;
+    showErr("你的浏览器不支持 WebGL2。请升级到 iOS 15+ Safari 或较新版本的 Chrome / Android 浏览器。");
+    return;
+  }
+  selectFilter("red"); // 上传初始 LUT + 高亮 chip
+})();
+</script>
+</body>
+</html>
